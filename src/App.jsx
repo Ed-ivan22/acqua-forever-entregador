@@ -173,44 +173,35 @@ const EntregasScreen = ({ perfil, onLogout }) => {
       return;
     }
 
-    // Keyword válida — confirmar entrega
+    // Keyword válida — confirmar entrega (debug: cada passo separado)
     try {
-      const [{ data: configP, error: e1 }, { data: perfilPreco, error: e2 }] = await Promise.all([
-        supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single(),
-        supabase.from("profiles").select("preco_galao").eq("id", entrega.user_id).single(),
-      ]);
-      if (e1) console.error("Erro config:", e1.message);
-      if (e2) console.error("Erro perfil:", e2.message);
-      const precoUnit = Number(perfilPreco?.preco_galao) || Number(configP?.valor) || 13;
-
-      const { error: errUpdate } = await supabase.from("deliveries").update({
+      // Passo 1: Update status
+      const { error: err1 } = await supabase.from("deliveries").update({
         status: "entregue",
         data_entregue: new Date().toISOString().split("T")[0],
-        preco_unitario: precoUnit,
         keyword_confirmed_at: new Date().toISOString(),
       }).eq("id", entrega.id);
+      if (err1) { alert("PASSO 1 (update status): " + err1.message); setValidando(null); return; }
 
-      if (errUpdate) {
-        alert("Erro ao confirmar entrega: " + errUpdate.message);
-        setValidando(null);
-        return;
-      }
+      // Passo 2: Busca preço e grava preco_unitario
+      const { data: configP } = await supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single();
+      const precoUnit = Number(configP?.valor) || 13;
+      await supabase.from("deliveries").update({ preco_unitario: precoUnit }).eq("id", entrega.id);
 
+      // Passo 3: Decrementa estoque
       await decrementarEstoque(entrega.quantidade_planejada || 1);
 
-      // Agenda próxima entrega
-      const { data: profile } = await supabase.from("profiles")
-        .select("frequencia_dias, galoes_por_entrega").eq("id", entrega.user_id).single();
-      const freq = profile?.frequencia_dias || 7;
-      const qty  = profile?.galoes_por_entrega || 1;
+      // Passo 4: Agenda próxima
+      const freq = 7; const qty = entrega.quantidade_planejada || 1;
       const prox = new Date(); prox.setDate(prox.getDate() + freq);
       const proxStr = prox.toISOString().split("T")[0];
       const { data: existe } = await supabase.from("deliveries").select("id")
         .eq("user_id", entrega.user_id).eq("status","agendada").gte("data_agendada", proxStr).maybeSingle();
       if (!existe) {
-        await supabase.from("deliveries").insert({
+        const { error: err4 } = await supabase.from("deliveries").insert({
           user_id: entrega.user_id, data_agendada: proxStr, status: "agendada", quantidade_planejada: qty,
         });
+        if (err4) { alert("PASSO 4 (agendar próxima): " + err4.message); }
       }
     } catch (ex) {
       alert("Erro inesperado: " + ex.message);
