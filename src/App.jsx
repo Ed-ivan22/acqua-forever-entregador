@@ -151,11 +151,15 @@ const EntregasScreen = ({ perfil, onLogout }) => {
 
   const carregar = async () => {
     setLoading(true);
-    const { data } = await supabase.from("deliveries")
-      .select("id, user_id, quantidade_planejada, data_agendada, keyword_code, profiles(full_name, celular, rua, numero, bairro)")
-      .eq("status", "em_rota")
+    // Usa view entregas_em_rota que já traz dados do cliente (sem RLS de profiles)
+    const { data } = await supabase.from("entregas_em_rota")
+      .select("id, user_id, quantidade_planejada, data_agendada, keyword_code, full_name, celular, rua, numero, bairro")
       .order("data_agendada", { ascending: true });
-    setEntregas(data || []);
+    // Mapeia pra formato compatível com o resto do código
+    setEntregas((data || []).map(e => ({
+      ...e,
+      profiles: { full_name: e.full_name, celular: e.celular, rua: e.rua, numero: e.numero, bairro: e.bairro },
+    })));
     setLoading(false);
   };
 
