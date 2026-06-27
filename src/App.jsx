@@ -174,34 +174,48 @@ const EntregasScreen = ({ perfil, onLogout }) => {
     }
 
     // Keyword válida — confirmar entrega
-    const [{ data: configP }, { data: perfilPreco }] = await Promise.all([
-      supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single(),
-      supabase.from("profiles").select("preco_galao").eq("id", entrega.user_id).single(),
-    ]);
-    const precoUnit = Number(perfilPreco?.preco_galao) || Number(configP?.valor) || 13;
+    try {
+      const [{ data: configP, error: e1 }, { data: perfilPreco, error: e2 }] = await Promise.all([
+        supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single(),
+        supabase.from("profiles").select("preco_galao").eq("id", entrega.user_id).single(),
+      ]);
+      if (e1) console.error("Erro config:", e1.message);
+      if (e2) console.error("Erro perfil:", e2.message);
+      const precoUnit = Number(perfilPreco?.preco_galao) || Number(configP?.valor) || 13;
 
-    await supabase.from("deliveries").update({
-      status: "entregue",
-      data_entregue: new Date().toISOString().split("T")[0],
-      preco_unitario: precoUnit,
-      keyword_confirmed_at: new Date().toISOString(),
-    }).eq("id", entrega.id);
+      const { error: errUpdate } = await supabase.from("deliveries").update({
+        status: "entregue",
+        data_entregue: new Date().toISOString().split("T")[0],
+        preco_unitario: precoUnit,
+        keyword_confirmed_at: new Date().toISOString(),
+      }).eq("id", entrega.id);
 
-    await decrementarEstoque(entrega.quantidade_planejada || 1);
+      if (errUpdate) {
+        alert("Erro ao confirmar entrega: " + errUpdate.message);
+        setValidando(null);
+        return;
+      }
 
-    // Agenda próxima entrega
-    const { data: profile } = await supabase.from("profiles")
-      .select("frequencia_dias, galoes_por_entrega").eq("id", entrega.user_id).single();
-    const freq = profile?.frequencia_dias || 7;
-    const qty  = profile?.galoes_por_entrega || 1;
-    const prox = new Date(); prox.setDate(prox.getDate() + freq);
-    const proxStr = prox.toISOString().split("T")[0];
-    const { data: existe } = await supabase.from("deliveries").select("id")
-      .eq("user_id", entrega.user_id).eq("status","agendada").gte("data_agendada", proxStr).maybeSingle();
-    if (!existe) {
-      await supabase.from("deliveries").insert({
-        user_id: entrega.user_id, data_agendada: proxStr, status: "agendada", quantidade_planejada: qty,
-      });
+      await decrementarEstoque(entrega.quantidade_planejada || 1);
+
+      // Agenda próxima entrega
+      const { data: profile } = await supabase.from("profiles")
+        .select("frequencia_dias, galoes_por_entrega").eq("id", entrega.user_id).single();
+      const freq = profile?.frequencia_dias || 7;
+      const qty  = profile?.galoes_por_entrega || 1;
+      const prox = new Date(); prox.setDate(prox.getDate() + freq);
+      const proxStr = prox.toISOString().split("T")[0];
+      const { data: existe } = await supabase.from("deliveries").select("id")
+        .eq("user_id", entrega.user_id).eq("status","agendada").gte("data_agendada", proxStr).maybeSingle();
+      if (!existe) {
+        await supabase.from("deliveries").insert({
+          user_id: entrega.user_id, data_agendada: proxStr, status: "agendada", quantidade_planejada: qty,
+        });
+      }
+    } catch (ex) {
+      alert("Erro inesperado: " + ex.message);
+      setValidando(null);
+      return;
     }
 
     setResultado(r => ({ ...r, [entrega.id]: "ok" }));
