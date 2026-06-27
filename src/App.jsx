@@ -80,7 +80,7 @@ const LoginScreen = ({ onLogin }) => {
     setLoading(true); setErro("");
     const { error } = await supabase.auth.signInWithPassword({ email, password: senha });
     if (error) {
-      setErro("Email ou senha inválidos");
+      setErro(error.message || "Email ou senha inválidos");
       setLoading(false);
     }
   };
