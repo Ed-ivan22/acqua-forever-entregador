@@ -153,7 +153,7 @@ const EntregasScreen = ({ perfil, onLogout }) => {
     setLoading(true);
     const { data } = await supabase.from("deliveries")
       .select("id, user_id, quantidade_planejada, data_agendada, keyword_code, profiles(full_name, celular, rua, numero, bairro)")
-      .eq("status", "em_entrega")
+      .eq("status", "em_rota")
       .order("data_agendada", { ascending: true });
     setEntregas(data || []);
     setLoading(false);
