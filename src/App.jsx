@@ -151,15 +151,28 @@ const EntregasScreen = ({ perfil, onLogout }) => {
 
   const carregar = async () => {
     setLoading(true);
-    // Usa view entregas_em_rota que já traz dados do cliente (sem RLS de profiles)
-    const { data } = await supabase.from("entregas_em_rota")
+    // Deliveries em rota (via view com dados do cliente)
+    const { data: delData } = await supabase.from("entregas_em_rota")
       .select("id, user_id, quantidade_planejada, data_agendada, keyword_code, full_name, celular, rua, numero, bairro")
       .order("data_agendada", { ascending: true });
-    // Mapeia pra formato compatível com o resto do código
-    setEntregas((data || []).map(e => ({
-      ...e,
+    const entregas = (delData || []).map(e => ({
+      ...e, _tipo: "delivery",
       profiles: { full_name: e.full_name, celular: e.celular, rua: e.rua, numero: e.numero, bairro: e.bairro },
-    })));
+    }));
+
+    // Orders em entrega (pedidos avulsos)
+    const { data: ordData } = await supabase.from("orders")
+      .select("id, user_id, quantidade, keyword_code, created_at, numero, profiles(full_name, celular, rua, numero, bairro)")
+      .eq("status", "em_entrega")
+      .not("keyword_code", "is", null)
+      .order("created_at", { ascending: true });
+    const pedidos = (ordData || []).map(o => ({
+      ...o, _tipo: "order",
+      quantidade_planejada: o.quantidade,
+      data_agendada: o.created_at,
+    }));
+
+    setEntregas([...entregas, ...pedidos]);
     setLoading(false);
   };
 
@@ -168,7 +181,6 @@ const EntregasScreen = ({ perfil, onLogout }) => {
   const validarKeyword = async (entrega) => {
     const digitada = (keywords[entrega.id] || "").trim().toUpperCase();
     if (!digitada) return;
-
     setValidando(entrega.id);
 
     if (digitada !== entrega.keyword_code?.toUpperCase()) {
@@ -177,46 +189,46 @@ const EntregasScreen = ({ perfil, onLogout }) => {
       return;
     }
 
-    // Keyword válida — confirmar entrega (debug: cada passo separado)
-    try {
-      // Passo 1: Update status
-      const { error: err1 } = await supabase.from("deliveries").update({
-        status: "entregue",
-        data_entregue: new Date().toISOString().split("T")[0],
+    // Keyword válida — confirmar entrega
+    const { data: configP } = await supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single();
+    const precoUnit = Number(configP?.valor) || 13;
+    const qty = entrega.quantidade_planejada || 1;
+
+    if (entrega._tipo === "order") {
+      // Pedido avulso
+      const { error } = await supabase.from("orders").update({
+        status: "entregue", assinado: true, assinado_em: new Date().toISOString(),
         keyword_confirmed_at: new Date().toISOString(),
       }).eq("id", entrega.id);
-      if (err1) { alert("PASSO 1 (update status): " + err1.message); setValidando(null); return; }
+      if (error) { alert("Erro: " + error.message); setValidando(null); return; }
+      await decrementarEstoque(qty);
+    } else {
+      // Delivery agendada
+      const { error } = await supabase.from("deliveries").update({
+        status: "entregue", data_entregue: new Date().toISOString().split("T")[0],
+        preco_unitario: precoUnit, keyword_confirmed_at: new Date().toISOString(),
+      }).eq("id", entrega.id);
+      if (error) { alert("Erro: " + error.message); setValidando(null); return; }
+      await decrementarEstoque(qty);
 
-      // Passo 2: Busca preço e grava preco_unitario
-      const { data: configP } = await supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single();
-      const precoUnit = Number(configP?.valor) || 13;
-      await supabase.from("deliveries").update({ preco_unitario: precoUnit }).eq("id", entrega.id);
-
-      // Passo 3: Decrementa estoque
-      await decrementarEstoque(entrega.quantidade_planejada || 1);
-
-      // Passo 4: Agenda próxima
-      const freq = 7; const qty = entrega.quantidade_planejada || 1;
+      // Agenda próxima entrega
+      const { data: profile } = await supabase.from("profiles")
+        .select("frequencia_dias, galoes_por_entrega").eq("id", entrega.user_id).single();
+      const freq = profile?.frequencia_dias || 7;
+      const nextQty = profile?.galoes_por_entrega || qty;
       const prox = new Date(); prox.setDate(prox.getDate() + freq);
       const proxStr = prox.toISOString().split("T")[0];
       const { data: existe } = await supabase.from("deliveries").select("id")
         .eq("user_id", entrega.user_id).eq("status","agendada").gte("data_agendada", proxStr).maybeSingle();
       if (!existe) {
-        const { error: err4 } = await supabase.from("deliveries").insert({
-          user_id: entrega.user_id, data_agendada: proxStr, status: "agendada", quantidade_planejada: qty,
+        await supabase.from("deliveries").insert({
+          user_id: entrega.user_id, data_agendada: proxStr, status: "agendada", quantidade_planejada: nextQty,
         });
-        if (err4) { alert("PASSO 4 (agendar próxima): " + err4.message); }
       }
-    } catch (ex) {
-      alert("Erro inesperado: " + ex.message);
-      setValidando(null);
-      return;
     }
 
     setResultado(r => ({ ...r, [entrega.id]: "ok" }));
     setValidando(null);
-
-    // Remove da lista após 2s
     setTimeout(() => {
       setEntregas(prev => prev.filter(e => e.id !== entrega.id));
       setResultado(r => { const n = {...r}; delete n[entrega.id]; return n; });
@@ -280,7 +292,13 @@ const EntregasScreen = ({ perfil, onLogout }) => {
               <div style={{ padding:"14px 16px", borderBottom:`1px solid ${C.border}` }}>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
                   <div>
-                    <div style={{ fontSize:15, fontWeight:"700", color:C.text }}>{e.profiles?.full_name || "Cliente"}</div>
+                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                      <span style={{ fontSize:15, fontWeight:"700", color:C.text }}>{e.profiles?.full_name || "Cliente"}</span>
+                      {e._tipo === "order" && (
+                        <span style={{ fontSize:9, fontWeight:"700", color:C.primary, background:C.accent+"22",
+                          padding:"2px 6px", borderRadius:4, textTransform:"uppercase" }}>Pedido {e.numero || ""}</span>
+                      )}
+                    </div>
                     <div style={{ fontSize:12, color:C.textSec, marginTop:2 }}>
                       <Icon name="phone" size={12} color={C.textSec}/> {e.profiles?.celular || "-"}
                     </div>
