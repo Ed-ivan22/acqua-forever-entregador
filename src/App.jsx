@@ -156,11 +156,14 @@ const LoginScreen = ({ onLogin }) => {
 //  TELA PRINCIPAL — ENTREGAS EM ANDAMENTO
 // ══════════════════════════════════════════════════════════════════════════════
 const EntregasScreen = ({ perfil, onLogout }) => {
+  const [abaEnt, setAbaEnt]       = useState("pendentes"); // "pendentes" | "historico"
   const [entregas, setEntregas]   = useState([]);
   const [loading, setLoading]     = useState(true);
   const [keywords, setKeywords]   = useState({});     // { deliveryId: "PURA47" }
   const [validando, setValidando] = useState(null);
   const [resultado, setResultado] = useState({});     // { deliveryId: "ok" | "erro" }
+  const [historico, setHistorico] = useState([]);
+  const [loadingHist, setLoadingHist] = useState(false);
 
   const carregar = async () => {
     setLoading(true);
@@ -206,12 +209,14 @@ const EntregasScreen = ({ perfil, onLogout }) => {
     const { data: configP } = await supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single();
     const precoUnit = Number(configP?.valor) || 13;
     const qty = entrega.quantidade_planejada || 1;
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    const entregadorId = authUser?.id || null;
 
     if (entrega._tipo === "order") {
       // Pedido avulso
       const { error } = await supabase.from("orders").update({
         status: "entregue", assinado: true, assinado_em: new Date().toISOString(),
-        keyword_confirmed_at: new Date().toISOString(),
+        keyword_confirmed_at: new Date().toISOString(), entregador_id: entregadorId,
       }).eq("id", entrega.id);
       if (error) { alert("Erro: " + error.message); setValidando(null); return; }
       await decrementarEstoque(qty);
@@ -220,6 +225,7 @@ const EntregasScreen = ({ perfil, onLogout }) => {
       const { error } = await supabase.from("deliveries").update({
         status: "entregue", data_entregue: new Date().toISOString().split("T")[0],
         preco_unitario: precoUnit, keyword_confirmed_at: new Date().toISOString(),
+        entregador_id: entregadorId,
       }).eq("id", entrega.id);
       if (error) { alert("Erro: " + error.message); setValidando(null); return; }
       await decrementarEstoque(qty);
@@ -248,6 +254,45 @@ const EntregasScreen = ({ perfil, onLogout }) => {
     }, 2000);
   };
 
+  const carregarHistorico = async () => {
+    setLoadingHist(true);
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser) { setLoadingHist(false); return; }
+
+    // Deliveries confirmadas por este entregador
+    const { data: delHist } = await supabase.from("deliveries")
+      .select("id, quantidade_planejada, data_entregue, data_agendada, preco_unitario, profiles(full_name)")
+      .eq("entregador_id", authUser.id).eq("status", "entregue")
+      .order("data_entregue", { ascending: false }).limit(50);
+
+    // Orders confirmadas por este entregador
+    const { data: ordHist } = await supabase.from("orders")
+      .select("id, quantidade, created_at, preco_unitario, numero, profiles(full_name)")
+      .eq("entregador_id", authUser.id).eq("status", "entregue")
+      .order("created_at", { ascending: false }).limit(50);
+
+    const merged = [
+      ...(delHist || []).map(d => ({
+        _tipo: "delivery", id: d.id, cliente: d.profiles?.full_name || "—",
+        qty: d.quantidade_planejada || 1, data: d.data_entregue || d.data_agendada,
+        preco: d.preco_unitario,
+      })),
+      ...(ordHist || []).map(o => ({
+        _tipo: "order", id: o.id, cliente: o.profiles?.full_name || "—",
+        qty: o.quantidade || 1, data: o.created_at, preco: o.preco_unitario,
+        numero: o.numero,
+      })),
+    ].sort((a, b) => new Date(b.data) - new Date(a.data));
+    setHistorico(merged);
+    setLoadingHist(false);
+  };
+
+  useEffect(() => { if (abaEnt === "historico") carregarHistorico(); }, [abaEnt]);
+
+  // Totais do histórico
+  const histTotal = historico.reduce((s, h) => s + h.qty, 0);
+  const histValor = historico.reduce((s, h) => s + h.qty * Number(h.preco || 0), 0);
+
   return (
     <div style={{ minHeight:"100vh", background:C.bg }}>
       {/* Header */}
@@ -269,8 +314,27 @@ const EntregasScreen = ({ perfil, onLogout }) => {
         </button>
       </div>
 
+      {/* Abas */}
+      <div style={{ display:"flex", background:"#fff", borderBottom:`2px solid ${C.border}` }}>
+        {[
+          { id:"pendentes", label:"🚚 Pendentes", count: entregas.length },
+          { id:"historico", label:"📋 Meu Histórico", count: historico.length },
+        ].map(a => (
+          <button key={a.id} onClick={() => setAbaEnt(a.id)}
+            style={{ ...btn({ padding:"12px 20px", borderRadius:0, fontSize:13, fontWeight:"600", flex:1, justifyContent:"center" }),
+              background: abaEnt===a.id ? C.primary : "transparent",
+              color: abaEnt===a.id ? "#fff" : C.textSec,
+              borderBottom: abaEnt===a.id ? `3px solid ${C.primaryDark}` : "3px solid transparent" }}>
+            {a.label} {a.count > 0 ? `(${a.count})` : ""}
+          </button>
+        ))}
+      </div>
+
       {/* Conteúdo */}
       <div style={{ padding:"16px 16px 32px" }}>
+
+      {/* ════ ABA PENDENTES ════ */}
+      {abaEnt === "pendentes" && (<>
         {/* Resumo */}
         <div style={{ ...card({ marginBottom:16, padding:"14px 18px",
           display:"flex", alignItems:"center", justifyContent:"space-between" }) }}>
@@ -383,6 +447,73 @@ const EntregasScreen = ({ perfil, onLogout }) => {
             </div>
           );
         })}
+      </>)}
+
+      {/* ════ ABA HISTÓRICO ════ */}
+      {abaEnt === "historico" && (
+        <>
+          {/* Resumo */}
+          <div style={{ ...card({ marginBottom:16, padding:"14px 18px" }),
+            display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:12 }}>
+            <div>
+              <div style={{ fontSize:11, color:C.textSec, fontWeight:"700",
+                textTransform:"uppercase", letterSpacing:"0.5px" }}>Entregas realizadas</div>
+              <div style={{ fontSize:28, fontWeight:"900", color:C.primary,
+                fontFamily:"'Outfit',sans-serif" }}>{histTotal}
+                <span style={{ fontSize:12, fontWeight:"500", color:C.textSec, marginLeft:4 }}>galões</span>
+              </div>
+            </div>
+            <div style={{ textAlign:"right" }}>
+              <div style={{ fontSize:11, color:C.textSec, fontWeight:"700",
+                textTransform:"uppercase", letterSpacing:"0.5px" }}>Valor total</div>
+              <div style={{ fontSize:22, fontWeight:"900", color:C.text,
+                fontFamily:"'Outfit',sans-serif" }}>R$ {fmt(histValor)}</div>
+            </div>
+            <button onClick={carregarHistorico} disabled={loadingHist}
+              style={{ ...btn({ padding:"8px 14px", fontSize:12 }),
+                background:C.successLight, color:C.primary, border:`1px solid ${C.primary}33` }}>
+              {loadingHist ? "..." : "↻ Atualizar"}
+            </button>
+          </div>
+
+          {/* Lista */}
+          {loadingHist ? (
+            <div style={{ textAlign:"center", padding:40, color:C.textSec }}>Carregando...</div>
+          ) : historico.length === 0 ? (
+            <div style={{ ...card({ textAlign:"center", padding:40 }) }}>
+              <div style={{ fontSize:40, marginBottom:8 }}>📋</div>
+              <div style={{ fontSize:15, fontWeight:"700", color:C.text }}>Nenhuma entrega registrada</div>
+              <div style={{ fontSize:13, color:C.textSec }}>Suas entregas confirmadas aparecerão aqui.</div>
+            </div>
+          ) : historico.map((h, i) => (
+            <div key={h.id} style={{ ...card({ marginBottom:8, padding:"12px 16px" }),
+              display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+              <div>
+                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                  <span style={{ fontSize:14, fontWeight:"600", color:C.text }}>{h.cliente}</span>
+                  {h._tipo === "order" && (
+                    <span style={{ fontSize:9, fontWeight:"700", color:C.primary, background:C.accent+"22",
+                      padding:"2px 6px", borderRadius:4 }}>Pedido {h.numero || ""}</span>
+                  )}
+                </div>
+                <div style={{ fontSize:12, color:C.textSec, marginTop:2 }}>
+                  {fmtDate(h.data)} · {h.qty} galão{h.qty > 1 ? "s" : ""}
+                  {h.preco ? ` · R$ ${fmt(h.preco)}/gal` : ""}
+                </div>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <div style={{ fontSize:15, fontWeight:"800", color:C.text,
+                  fontFamily:"'Outfit',sans-serif" }}>
+                  R$ {fmt(h.qty * Number(h.preco || 0))}
+                </div>
+                <span style={{ fontSize:10, fontWeight:"700", color:C.success,
+                  background:C.successLight, padding:"2px 6px", borderRadius:4 }}>✓ Entregue</span>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
       </div>
     </div>
   );
