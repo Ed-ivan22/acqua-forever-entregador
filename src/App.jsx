@@ -209,9 +209,8 @@ const EntregasScreen = ({ perfil, onLogout }) => {
     const { data: configP } = await supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single();
     const precoUnit = Number(configP?.valor) || 13;
     const qty = entrega.quantidade_planejada || 1;
-    const { data: { user: authUser }, error: authErr } = await supabase.auth.getUser();
+    const { data: { user: authUser } } = await supabase.auth.getUser();
     const entregadorId = authUser?.id || null;
-    if (!entregadorId) alert("AVISO: entregador_id é null. authErr: " + (authErr?.message || "sem erro, user vazio"));
 
     if (entrega._tipo === "order") {
       // Pedido avulso
@@ -222,9 +221,11 @@ const EntregasScreen = ({ perfil, onLogout }) => {
       if (error) { alert("Erro: " + error.message); setValidando(null); return; }
       await decrementarEstoque(qty);
     } else {
-      // Delivery agendada
+      // Delivery agendada — usa data local (Brasília) pra evitar shift UTC
+      const hoje = new Date();
+      const dataLocal = `${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,"0")}-${String(hoje.getDate()).padStart(2,"0")}`;
       const { error } = await supabase.from("deliveries").update({
-        status: "entregue", data_entregue: new Date().toISOString().split("T")[0],
+        status: "entregue", data_entregue: dataLocal,
         preco_unitario: precoUnit, keyword_confirmed_at: new Date().toISOString(),
         entregador_id: entregadorId,
       }).eq("id", entrega.id);
