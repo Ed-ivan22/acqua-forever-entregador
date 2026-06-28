@@ -209,8 +209,9 @@ const EntregasScreen = ({ perfil, onLogout }) => {
     const { data: configP } = await supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single();
     const precoUnit = Number(configP?.valor) || 13;
     const qty = entrega.quantidade_planejada || 1;
-    const { data: { user: authUser } } = await supabase.auth.getUser();
+    const { data: { user: authUser }, error: authErr } = await supabase.auth.getUser();
     const entregadorId = authUser?.id || null;
+    if (!entregadorId) alert("AVISO: entregador_id é null. authErr: " + (authErr?.message || "sem erro, user vazio"));
 
     if (entrega._tipo === "order") {
       // Pedido avulso
