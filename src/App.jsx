@@ -546,6 +546,8 @@ export default function App() {
     if (data && (data.perfil === "entregador" || data.perfil === "admin") && data.ativo !== false) {
       setPerfil(data);
       setAuth("ok");
+      // Registra login
+      supabase.from("login_logs").insert({ user_id: userId, app: "entregador" });
     } else {
       setAuth("denied");
     }
