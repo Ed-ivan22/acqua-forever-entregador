@@ -70,17 +70,29 @@ const decrementarEstoque = async (quantidade) => {
 //  TELA DE LOGIN
 // ══════════════════════════════════════════════════════════════════════════════
 const LoginScreen = ({ onLogin }) => {
-  const [email, setEmail]       = useState("");
+  const [cpf, setCpf]           = useState("");
   const [senha, setSenha]       = useState("");
   const [loading, setLoading]   = useState(false);
   const [erro, setErro]         = useState("");
 
+  const cpfLimpo = (v) => v.replace(/\D/g, "");
+  const cpfMask = (v) => {
+    const n = cpfLimpo(v).slice(0, 11);
+    if (n.length <= 3) return n;
+    if (n.length <= 6) return n.slice(0,3) + "." + n.slice(3);
+    if (n.length <= 9) return n.slice(0,3) + "." + n.slice(3,6) + "." + n.slice(6);
+    return n.slice(0,3) + "." + n.slice(3,6) + "." + n.slice(6,9) + "-" + n.slice(9);
+  };
+
   const entrar = async (e) => {
     e.preventDefault();
+    const cpfNum = cpfLimpo(cpf);
+    if (cpfNum.length !== 11) { setErro("CPF deve ter 11 dígitos"); return; }
     setLoading(true); setErro("");
+    const email = cpfNum + "@entregador.acquaforever.com";
     const { error } = await supabase.auth.signInWithPassword({ email, password: senha });
     if (error) {
-      setErro(error.message || "Email ou senha inválidos");
+      setErro("CPF ou senha inválidos");
       setLoading(false);
     }
   };
@@ -104,11 +116,12 @@ const LoginScreen = ({ onLogin }) => {
         <form onSubmit={entrar}>
           <div style={{ marginBottom:14 }}>
             <label style={{ fontSize:11, fontWeight:"700", color:C.textSec,
-              display:"block", marginBottom:5, textTransform:"uppercase", letterSpacing:"0.5px" }}>Email</label>
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
-              placeholder="seu@email.com"
+              display:"block", marginBottom:5, textTransform:"uppercase", letterSpacing:"0.5px" }}>CPF</label>
+            <input type="text" value={cpfMask(cpf)} onChange={e => setCpf(e.target.value)}
+              required placeholder="000.000.000-00" maxLength={14}
               style={{ width:"100%", padding:"11px 14px", borderRadius:10,
-                border:`1.5px solid ${C.border}`, fontSize:14, fontFamily:"inherit" }}/>
+                border:`1.5px solid ${C.border}`, fontSize:18, fontWeight:"700",
+                fontFamily:"'Outfit',monospace", letterSpacing:"1px", textAlign:"center" }}/>
           </div>
           <div style={{ marginBottom:20 }}>
             <label style={{ fontSize:11, fontWeight:"700", color:C.textSec,
@@ -396,8 +409,8 @@ export default function App() {
 
   const verificarPerfil = async (userId) => {
     const { data } = await supabase.from("profiles")
-      .select("full_name, perfil").eq("id", userId).single();
-    if (data && (data.perfil === "entregador" || data.perfil === "admin")) {
+      .select("full_name, perfil, ativo").eq("id", userId).single();
+    if (data && (data.perfil === "entregador" || data.perfil === "admin") && data.ativo !== false) {
       setPerfil(data);
       setAuth("ok");
     } else {
