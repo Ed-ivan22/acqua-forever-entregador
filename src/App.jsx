@@ -90,10 +90,13 @@ const LoginScreen = ({ onLogin }) => {
     if (cpfNum.length !== 11) { setErro("CPF deve ter 11 dígitos"); return; }
     setLoading(true); setErro("");
     const email = cpfNum + "@entregador.acquaforever.com";
-    const { error } = await supabase.auth.signInWithPassword({ email, password: senha });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password: senha });
     if (error) {
       setErro("CPF ou senha inválidos");
       setLoading(false);
+    } else if (data?.user) {
+      // Registra o login real (submit de credenciais), não recargas/refresh de token
+      supabase.from("login_logs").insert({ user_id: data.user.id, app: "entregador" });
     }
   };
 
@@ -206,8 +209,12 @@ const EntregasScreen = ({ perfil, onLogout }) => {
     }
 
     // Keyword válida — confirmar entrega
-    const { data: configP } = await supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single();
-    const precoUnit = Number(configP?.valor) || 13;
+    // Preço vigente do cliente: individual (perfil) tem prioridade, senão o padrão global
+    const [{ data: configP }, { data: perfilPreco }] = await Promise.all([
+      supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single(),
+      supabase.from("profiles").select("preco_galao").eq("id", entrega.user_id).single(),
+    ]);
+    const precoUnit = Number(perfilPreco?.preco_galao) || Number(configP?.valor);
     const qty = entrega.quantidade_planejada || 1;
     const { data: { user: authUser } } = await supabase.auth.getUser();
     const entregadorId = authUser?.id || null;
@@ -238,10 +245,11 @@ const EntregasScreen = ({ perfil, onLogout }) => {
       const freq = profile?.frequencia_dias || 7;
       const nextQty = profile?.galoes_por_entrega || qty;
       const prox = new Date(); prox.setDate(prox.getDate() + freq);
-      const proxStr = prox.toISOString().split("T")[0];
+      // Data local (Brasília) pra evitar shift de dia; limit(1) evita erro se houver 2+ agendadas
+      const proxStr = `${prox.getFullYear()}-${String(prox.getMonth()+1).padStart(2,"0")}-${String(prox.getDate()).padStart(2,"0")}`;
       const { data: existe } = await supabase.from("deliveries").select("id")
-        .eq("user_id", entrega.user_id).eq("status","agendada").gte("data_agendada", proxStr).maybeSingle();
-      if (!existe) {
+        .eq("user_id", entrega.user_id).eq("status","agendada").gte("data_agendada", proxStr).limit(1);
+      if (!existe?.length) {
         await supabase.from("deliveries").insert({
           user_id: entrega.user_id, data_agendada: proxStr, status: "agendada", quantidade_planejada: nextQty,
         });
@@ -546,8 +554,6 @@ export default function App() {
     if (data && (data.perfil === "entregador" || data.perfil === "admin") && data.ativo !== false) {
       setPerfil(data);
       setAuth("ok");
-      // Registra login
-      supabase.from("login_logs").insert({ user_id: userId, app: "entregador" });
     } else {
       setAuth("denied");
     }
