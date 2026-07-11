@@ -53,19 +53,6 @@ const card = (extra = {}) => ({
   boxShadow: "0 2px 12px rgba(0,0,0,0.06)", border: `1px solid ${C.border}`, ...extra,
 });
 
-// ── ESTOQUE ──────────────────────────────────────────────────────────────────
-const decrementarEstoque = async (quantidade) => {
-  if (!quantidade || quantidade <= 0) return;
-  const { data: estoque } = await supabase
-    .from("estoque").select("id, galoes_cheios, galoes_vazios").limit(1).single();
-  if (estoque) {
-    await supabase.from("estoque").update({
-      galoes_cheios: Math.max(0, estoque.galoes_cheios - quantidade),
-      galoes_vazios: estoque.galoes_vazios + quantidade,
-    }).eq("id", estoque.id);
-  }
-};
-
 // ══════════════════════════════════════════════════════════════════════════════
 //  TELA DE LOGIN
 // ══════════════════════════════════════════════════════════════════════════════
@@ -170,25 +157,25 @@ const EntregasScreen = ({ perfil, onLogout }) => {
 
   const carregar = async () => {
     setLoading(true);
-    // Deliveries em rota (via view com dados do cliente)
+    // Deliveries em rota (view — sem keyword, gated a entregador)
     const { data: delData } = await supabase.from("entregas_em_rota")
-      .select("id, user_id, quantidade_planejada, data_agendada, keyword_code, full_name, celular, rua, numero, bairro")
+      .select("id, user_id, quantidade_planejada, data_agendada, full_name, celular, rua, numero, bairro")
       .order("data_agendada", { ascending: true });
     const entregas = (delData || []).map(e => ({
       ...e, _tipo: "delivery",
       profiles: { full_name: e.full_name, celular: e.celular, rua: e.rua, numero: e.numero, bairro: e.bairro },
     }));
 
-    // Orders em entrega (pedidos avulsos)
-    const { data: ordData } = await supabase.from("orders")
-      .select("id, user_id, quantidade, keyword_code, created_at, numero, profiles(full_name, celular, rua, numero, bairro)")
-      .eq("status", "em_entrega")
-      .not("keyword_code", "is", null)
+    // Pedidos avulsos em entrega (view — sem keyword, gated a entregador)
+    const { data: ordData } = await supabase.from("pedidos_em_entrega")
+      .select("id, user_id, quantidade, created_at, numero_pedido, full_name, celular, rua, numero, bairro")
       .order("created_at", { ascending: true });
     const pedidos = (ordData || []).map(o => ({
-      ...o, _tipo: "order",
+      id: o.id, user_id: o.user_id, _tipo: "order",
+      numero: o.numero_pedido,
       quantidade_planejada: o.quantidade,
       data_agendada: o.created_at,
+      profiles: { full_name: o.full_name, celular: o.celular, rua: o.rua, numero: o.numero, bairro: o.bairro },
     }));
 
     setEntregas([...entregas, ...pedidos]);
@@ -197,63 +184,26 @@ const EntregasScreen = ({ perfil, onLogout }) => {
 
   useEffect(() => { carregar(); }, []);
 
+  // Confirmação 100% no servidor: a RPC valida a keyword, grava a data em
+  // Brasília, decrementa estoque atômico e agenda a próxima. O app não vê
+  // mais a keyword nem escreve direto em deliveries/orders/estoque.
   const validarKeyword = async (entrega) => {
     const digitada = (keywords[entrega.id] || "").trim().toUpperCase();
     if (!digitada) return;
     setValidando(entrega.id);
 
-    if (digitada !== entrega.keyword_code?.toUpperCase()) {
-      setResultado(r => ({ ...r, [entrega.id]: "erro" }));
+    const { data, error } = await supabase.rpc("confirmar_entrega", {
+      p_tipo: entrega._tipo, p_id: entrega.id, p_keyword: digitada,
+    });
+
+    if (error || !data?.ok) {
+      if (data?.error === "keyword_invalida") {
+        setResultado(r => ({ ...r, [entrega.id]: "erro" }));
+      } else {
+        alert("Erro ao confirmar: " + (data?.error || error?.message || "falha"));
+      }
       setValidando(null);
       return;
-    }
-
-    // Keyword válida — confirmar entrega
-    // Preço vigente do cliente: individual (perfil) tem prioridade, senão o padrão global
-    const [{ data: configP }, { data: perfilPreco }] = await Promise.all([
-      supabase.from("configuracoes").select("valor").eq("chave", "preco_galao_padrao").single(),
-      supabase.from("profiles").select("preco_galao").eq("id", entrega.user_id).single(),
-    ]);
-    const precoUnit = Number(perfilPreco?.preco_galao) || Number(configP?.valor);
-    const qty = entrega.quantidade_planejada || 1;
-    const { data: { user: authUser } } = await supabase.auth.getUser();
-    const entregadorId = authUser?.id || null;
-
-    if (entrega._tipo === "order") {
-      // Pedido avulso
-      const { error } = await supabase.from("orders").update({
-        status: "entregue", assinado: true, assinado_em: new Date().toISOString(),
-        keyword_confirmed_at: new Date().toISOString(), entregador_id: entregadorId,
-      }).eq("id", entrega.id);
-      if (error) { alert("Erro: " + error.message); setValidando(null); return; }
-      await decrementarEstoque(qty);
-    } else {
-      // Delivery agendada — usa data local (Brasília) pra evitar shift UTC
-      const hoje = new Date();
-      const dataLocal = `${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,"0")}-${String(hoje.getDate()).padStart(2,"0")}`;
-      const { error } = await supabase.from("deliveries").update({
-        status: "entregue", data_entregue: dataLocal,
-        preco_unitario: precoUnit, keyword_confirmed_at: new Date().toISOString(),
-        entregador_id: entregadorId,
-      }).eq("id", entrega.id);
-      if (error) { alert("Erro: " + error.message); setValidando(null); return; }
-      await decrementarEstoque(qty);
-
-      // Agenda próxima entrega
-      const { data: profile } = await supabase.from("profiles")
-        .select("frequencia_dias, galoes_por_entrega").eq("id", entrega.user_id).single();
-      const freq = profile?.frequencia_dias || 7;
-      const nextQty = profile?.galoes_por_entrega || qty;
-      const prox = new Date(); prox.setDate(prox.getDate() + freq);
-      // Data local (Brasília) pra evitar shift de dia; limit(1) evita erro se houver 2+ agendadas
-      const proxStr = `${prox.getFullYear()}-${String(prox.getMonth()+1).padStart(2,"0")}-${String(prox.getDate()).padStart(2,"0")}`;
-      const { data: existe } = await supabase.from("deliveries").select("id")
-        .eq("user_id", entrega.user_id).eq("status","agendada").gte("data_agendada", proxStr).limit(1);
-      if (!existe?.length) {
-        await supabase.from("deliveries").insert({
-          user_id: entrega.user_id, data_agendada: proxStr, status: "agendada", quantidade_planejada: nextQty,
-        });
-      }
     }
 
     setResultado(r => ({ ...r, [entrega.id]: "ok" }));
