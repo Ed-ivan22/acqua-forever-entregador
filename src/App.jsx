@@ -157,19 +157,15 @@ const EntregasScreen = ({ perfil, onLogout }) => {
 
   const carregar = async () => {
     setLoading(true);
-    // Deliveries em rota (view — sem keyword, gated a entregador)
-    const { data: delData } = await supabase.from("entregas_em_rota")
-      .select("id, user_id, quantidade_planejada, data_agendada, full_name, celular, rua, numero, bairro")
-      .order("data_agendada", { ascending: true });
+    // Entregas em rota (função definer — sem keyword, gated a entregador)
+    const { data: delData } = await supabase.rpc("listar_entregas_em_rota");
     const entregas = (delData || []).map(e => ({
       ...e, _tipo: "delivery",
       profiles: { full_name: e.full_name, celular: e.celular, rua: e.rua, numero: e.numero, bairro: e.bairro },
     }));
 
-    // Pedidos avulsos em entrega (view — sem keyword, gated a entregador)
-    const { data: ordData } = await supabase.from("pedidos_em_entrega")
-      .select("id, user_id, quantidade, created_at, numero_pedido, full_name, celular, rua, numero, bairro")
-      .order("created_at", { ascending: true });
+    // Pedidos avulsos em entrega (função definer — sem keyword, gated a entregador)
+    const { data: ordData } = await supabase.rpc("listar_pedidos_em_entrega");
     const pedidos = (ordData || []).map(o => ({
       id: o.id, user_id: o.user_id, _tipo: "order",
       numero: o.numero_pedido,
