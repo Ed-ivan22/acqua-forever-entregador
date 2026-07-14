@@ -223,6 +223,31 @@ const EntregasScreen = ({ perfil, onLogout }) => {
     }, 2000);
   };
 
+  // Falha de entrega (cliente ausente, endereço errado, casco não recolhido):
+  // registrada server-side pela RPC registrar_falha — status vira 'falha' com
+  // motivo e o admin decide o que fazer. Não mexe em estoque nem agenda próxima.
+  const registrarFalha = async (entrega) => {
+    const motivo = window.prompt(
+      "Motivo da falha (ex.: cliente ausente, endereço não encontrado, casco não recolhido):"
+    );
+    if (motivo === null) return;
+    if (!motivo.trim()) { alert("Informe o motivo da falha."); return; }
+    setValidando(entrega.id);
+    const { data, error } = await supabase.rpc("registrar_falha", {
+      p_tipo: entrega._tipo, p_id: entrega.id, p_motivo: motivo.trim(),
+    });
+    setValidando(null);
+    if (error || !data?.ok) {
+      alert("Erro ao registrar falha: " + (data?.error || error?.message || "falha"));
+      return;
+    }
+    setResultado(r => ({ ...r, [entrega.id]: "falha" }));
+    setTimeout(() => {
+      setEntregas(prev => prev.filter(e => e.id !== entrega.id));
+      setResultado(r => { const n = {...r}; delete n[entrega.id]; return n; });
+    }, 2000);
+  };
+
   const carregarHistorico = async () => {
     setLoadingHist(true);
     const { data: { user: authUser } } = await supabase.auth.getUser();
@@ -366,7 +391,7 @@ const EntregasScreen = ({ perfil, onLogout }) => {
               </div>
             )}
             <div style={{ ...card({ marginBottom:12, padding:0, overflow:"hidden",
-              border: res === "ok" ? `2px solid ${C.success}` : res === "erro" ? `2px solid ${C.danger}` : `1px solid ${C.border}` }) }}>
+              border: res === "ok" ? `2px solid ${C.success}` : res === "falha" ? `2px solid ${C.warning}` : res === "erro" ? `2px solid ${C.danger}` : `1px solid ${C.border}` }) }}>
               {/* Info do cliente */}
               <div style={{ padding:"14px 16px", borderBottom:`1px solid ${C.border}` }}>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
@@ -416,6 +441,12 @@ const EntregasScreen = ({ perfil, onLogout }) => {
                     Entrega confirmada!
                   </span>
                 </div>
+              ) : res === "falha" ? (
+                <div style={{ padding:"14px 16px", background:C.warningLight, textAlign:"center" }}>
+                  <span style={{ fontSize:14, fontWeight:"700", color:C.warning }}>
+                    ⚠️ Falha registrada. O escritório vai tratar.
+                  </span>
+                </div>
               ) : (
                 <div style={{ padding:"14px 16px", background:"#FAFFF5" }}>
                   <div style={{ fontSize:11, fontWeight:"700", color:C.textSec,
@@ -451,6 +482,11 @@ const EntregasScreen = ({ perfil, onLogout }) => {
                       ❌ Palavra-chave incorreta. Peça novamente ao cliente.
                     </div>
                   )}
+                  <button onClick={() => registrarFalha(e)} disabled={validando === e.id}
+                    style={{ ...btn({ padding:"8px 0", fontSize:12, width:"100%", justifyContent:"center", marginTop:10 }),
+                      background:"transparent", color:C.danger, border:`1.5px dashed ${C.danger}66` }}>
+                    ⚠️ Não consegui entregar
+                  </button>
                 </div>
               )}
             </div>
